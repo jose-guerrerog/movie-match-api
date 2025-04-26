@@ -348,5 +348,50 @@ def setup_database():
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
+@app.route('/api/debug-setup', methods=['GET'])
+def debug_setup():
+    try:
+        import os
+        
+        # Check if data directory exists
+        data_dir = os.path.join(os.path.dirname(__file__), 'data')
+        if not os.path.exists(data_dir):
+            return jsonify({"error": f"Data directory not found: {data_dir}"})
+            
+        # List files in data directory
+        files = os.listdir(data_dir)
+        
+        # Check if CSV files exist
+        csv_files = [f for f in files if f.endswith('.csv')]
+        
+        # Check database tables
+        from database import SessionLocal
+        db = SessionLocal()
+        tables = {}
+        
+        try:
+            # Check if Movie table exists and is empty
+            from models import Movie, Rating
+            movie_count = db.query(Movie).count()
+            rating_count = db.query(Rating).count()
+            
+            tables = {
+                "movies": movie_count,
+                "ratings": rating_count
+            }
+        except Exception as e:
+            tables = {"error": str(e)}
+        finally:
+            db.close()
+            
+        return jsonify({
+            "data_dir": data_dir,
+            "files": files,
+            "csv_files": csv_files,
+            "tables": tables
+        })
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
 if __name__ == '__main__':
     app.run(debug=True, host='0.0.0.0', port=int(os.environ.get('PORT', 5000)))
