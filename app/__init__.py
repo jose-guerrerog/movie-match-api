@@ -338,5 +338,15 @@ def get_stats():
     
     return jsonify(stats)
 
+@app.route('/api/setup', methods=['GET'])
+def setup_database():
+    """One-time endpoint to populate the database"""
+    try:
+        from app.migration import migrate_data
+        migrate_data()
+        return jsonify({"message": "Database setup complete"})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
 if __name__ == '__main__':
     app.run(debug=True, host='0.0.0.0', port=int(os.environ.get('PORT', 5000)))
