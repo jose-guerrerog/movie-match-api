@@ -8,8 +8,8 @@ import numpy as np
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.metrics.pairwise import cosine_similarity
 import os
-from database import SessionLocal, engine, Base
-import models
+from .database import SessionLocal, engine, Base
+import .models as models
 from sqlalchemy.sql import func
 from sqlalchemy import desc
 
