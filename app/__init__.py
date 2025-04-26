@@ -342,7 +342,7 @@ def get_stats():
 def setup_database():
     """One-time endpoint to populate the database"""
     try:
-        from app.migration import migrate_data
+        from migration import migrate_data
         migrate_data()
         return jsonify({"message": "Database setup complete"})
     except Exception as e:
