@@ -426,5 +426,114 @@ def simple_debug():
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
+@app.route('/api/download-movies', methods=['GET'])
+def download_movies():
+    try:
+        import requests
+        import zipfile
+        import io
+        import os
+        import pandas as pd
+        from database import SessionLocal, engine, Base
+        import models
+        
+        # Create data directory if it doesn't exist
+        data_dir = os.path.join(os.path.dirname(__file__), 'data')
+        os.makedirs(data_dir, exist_ok=True)
+        
+        # Download MovieLens dataset
+        print("Downloading MovieLens dataset...")
+        url = "https://files.grouplens.org/datasets/movielens/ml-latest-small.zip"
+        response = requests.get(url)
+        
+        if response.status_code != 200:
+            return jsonify({"error": f"Failed to download dataset: {response.status_code}"})
+            
+        # Extract ZIP file
+        print("Extracting ZIP file...")
+        z = zipfile.ZipFile(io.BytesIO(response.content))
+        z.extractall(data_dir)
+        
+        # Find CSV files
+        extracted_dir = os.path.join(data_dir, 'ml-latest-small')
+        movies_path = os.path.join(extracted_dir, 'movies.csv')
+        ratings_path = os.path.join(extracted_dir, 'ratings.csv')
+        
+        if not os.path.exists(movies_path) or not os.path.exists(ratings_path):
+            return jsonify({"error": "CSV files not found in extracted data"})
+            
+        # Create database tables
+        Base.metadata.create_all(bind=engine)
+        
+        # Import data
+        db = SessionLocal()
+        
+        try:
+            # Check if data already exists
+            existing_movies = db.query(models.Movie).count()
+            if existing_movies > 0:
+                return jsonify({"message": f"Data already exists in database ({existing_movies} movies)"})
+                
+            # Load CSV files
+            print("Importing movies...")
+            movies_df = pd.read_csv(movies_path)
+            
+            # Import movies
+            movie_count = 0
+            for _, row in movies_df.iterrows():
+                movie = models.Movie(
+                    movieId=int(row['movieId']),
+                    title=row['title'],
+                    genres=row['genres']
+                )
+                db.add(movie)
+                movie_count += 1
+                
+                # Commit in batches
+                if movie_count % 100 == 0:
+                    db.commit()
+                    
+            # Final commit for movies
+            db.commit()
+            print(f"Imported {movie_count} movies")
+            
+            # Import ratings (in batches)
+            print("Importing ratings...")
+            ratings_df = pd.read_csv(ratings_path)
+            rating_count = 0
+            batch_size = 1000
+            for i in range(0, len(ratings_df), batch_size):
+                batch = ratings_df.iloc[i:i+batch_size]
+                for _, row in batch.iterrows():
+                    rating = models.Rating(
+                        userId=int(row['userId']),
+                        movieId=int(row['movieId']),
+                        rating=float(row['rating']),
+                        timestamp=int(row['timestamp']) if 'timestamp' in row else None
+                    )
+                    db.add(rating)
+                    rating_count += 1
+                db.commit()
+                print(f"Imported {rating_count} ratings so far...")
+                
+            return jsonify({
+                "message": "Database setup complete",
+                "imported": {
+                    "movies": movie_count,
+                    "ratings": rating_count
+                }
+            })
+            
+        except Exception as e:
+            db.rollback()
+            print(f"Error importing data: {str(e)}")
+            return jsonify({"error": f"Error importing data: {str(e)}"})
+        finally:
+            db.close()
+            
+    except Exception as e:
+        print(f"Setup error: {str(e)}")
+        return jsonify({"error": str(e)}), 500
+
 if __name__ == '__main__':
     app.run(debug=True, host='0.0.0.0', port=int(os.environ.get('PORT', 5000)))
