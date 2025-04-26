@@ -9,7 +9,7 @@ from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.metrics.pairwise import cosine_similarity
 import os
 from .database import SessionLocal, engine, Base
-import .models as models
+from . import models
 from sqlalchemy.sql import func
 from sqlalchemy import desc
 
