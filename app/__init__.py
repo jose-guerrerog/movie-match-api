@@ -393,5 +393,38 @@ def debug_setup():
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
+@app.route('/api/simple-debug', methods=['GET'])
+def simple_debug():
+    try:
+        import os
+        
+        # Check if the data directory exists
+        app_dir = os.path.dirname(__file__)
+        data_dir = os.path.join(app_dir, 'data')
+        exists = os.path.exists(data_dir)
+        
+        # Check basic database connection
+        from database import SessionLocal
+        db = SessionLocal()
+        tables_exist = False
+        
+        try:
+            # Simple query to check database connection
+            result = db.execute("SELECT 1").scalar()
+            tables_exist = result == 1
+        except Exception as e:
+            tables_exist = False
+        finally:
+            db.close()
+            
+        return jsonify({
+            "app_dir": app_dir,
+            "data_dir": data_dir,
+            "data_dir_exists": exists,
+            "database_connection": tables_exist
+        })
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
 if __name__ == '__main__':
     app.run(debug=True, host='0.0.0.0', port=int(os.environ.get('PORT', 5000)))
