@@ -348,192 +348,115 @@ def setup_database():
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
-@app.route('/api/debug-setup', methods=['GET'])
-def debug_setup():
+@app.route('/api/simple-recommend', methods=['GET'])
+def simple_recommend():
+    movie_id = int(request.args.get('movie_id', '1'))
+    count = int(request.args.get('count', '5'))
+    method = request.args.get('method', 'content')  # 'content' or 'collaborative'
+    
+    db = SessionLocal()
+    
     try:
-        import os
+        # Get the target movie
+        movie = db.query(models.Movie).filter(models.Movie.movieId == movie_id).first()
+        if not movie:
+            return jsonify({"error": "Movie not found"}), 404
         
-        # Check if data directory exists
-        data_dir = os.path.join(os.path.dirname(__file__), 'data')
-        if not os.path.exists(data_dir):
-            return jsonify({"error": f"Data directory not found: {data_dir}"})
+        recommendations = []
+        
+        if method == 'content':
+            # Content-based: Find movies with similar genres
+            movie_genres = set(movie.genres.split('|'))
             
-        # List files in data directory
-        files = os.listdir(data_dir)
-        
-        # Check if CSV files exist
-        csv_files = [f for f in files if f.endswith('.csv')]
-        
-        # Check database tables
-        from database import SessionLocal
-        db = SessionLocal()
-        tables = {}
-        
-        try:
-            # Check if Movie table exists and is empty
-            from models import Movie, Rating
-            movie_count = db.query(Movie).count()
-            rating_count = db.query(Rating).count()
+            # Find movies with similar genres
+            similar_movies = db.query(models.Movie).filter(
+                models.Movie.movieId != movie_id
+            ).all()
             
-            tables = {
-                "movies": movie_count,
-                "ratings": rating_count
-            }
-        except Exception as e:
-            tables = {"error": str(e)}
-        finally:
-            db.close()
+            # Score each movie by genre overlap
+            movie_scores = []
+            for similar in similar_movies:
+                similar_genres = set(similar.genres.split('|'))
+                overlap = len(movie_genres.intersection(similar_genres))
+                if overlap > 0:  # Only include movies with at least one shared genre
+                    movie_scores.append({
+                        'movie': similar,
+                        'score': overlap / len(movie_genres.union(similar_genres))  # Jaccard similarity
+                    })
             
+            # Sort by similarity score
+            movie_scores.sort(key=lambda x: x['score'], reverse=True)
+            
+            # Get top recommendations
+            for i, scored in enumerate(movie_scores[:count]):
+                similar = scored['movie']
+                recommendations.append({
+                    'id': int(similar.movieId),
+                    'title': similar.title,
+                    'genres': similar.genres.split('|'),
+                    'year': similar.title[-5:-1] if similar.title[-5:-1].isdigit() else None,
+                    'explanation': f"This movie shares similar genres with '{movie.title}'"
+                })
+        
+        elif method == 'collaborative':
+            # Find users who rated this movie highly
+            high_raters = db.query(models.Rating.userId).filter(
+                models.Rating.movieId == movie_id,
+                models.Rating.rating >= 4.0
+            ).all()
+            
+            high_raters = [user[0] for user in high_raters]
+            
+            if not high_raters:
+                # Fallback to content-based if no users rated this movie highly
+                return simple_recommend()
+            
+            # Find other movies these users rated highly
+            similar_movies = db.query(
+                models.Rating.movieId,
+                func.avg(models.Rating.rating).label('avg_rating'),
+                func.count(models.Rating.userId).label('rating_count')
+            ).filter(
+                models.Rating.userId.in_(high_raters),
+                models.Rating.movieId != movie_id,
+                models.Rating.rating >= 4.0
+            ).group_by(
+                models.Rating.movieId
+            ).having(
+                func.count(models.Rating.userId) >= 2  # At least 2 users in common
+            ).order_by(
+                desc('rating_count'),
+                desc('avg_rating')
+            ).limit(count).all()
+            
+            # Get full movie details
+            for i, (similar_id, avg_rating, rating_count) in enumerate(similar_movies):
+                similar = db.query(models.Movie).filter(models.Movie.movieId == similar_id).first()
+                if similar:
+                    recommendations.append({
+                        'id': int(similar.movieId),
+                        'title': similar.title,
+                        'genres': similar.genres.split('|'),
+                        'year': similar.title[-5:-1] if similar.title[-5:-1].isdigit() else None,
+                        'explanation': f"{rating_count} users who liked '{movie.title}' also rated this movie highly"
+                    })
+        
         return jsonify({
-            "data_dir": data_dir,
-            "files": files,
-            "csv_files": csv_files,
-            "tables": tables
+            "baseMovie": {
+                'id': int(movie.movieId),
+                'title': movie.title,
+                'genres': movie.genres.split('|'),
+                'year': movie.title[-5:-1] if movie.title[-5:-1].isdigit() else None,
+            },
+            "recommendations": recommendations,
+            "method": method
         })
+    
     except Exception as e:
+        db.rollback()
         return jsonify({"error": str(e)}), 500
-
-@app.route('/api/simple-debug', methods=['GET'])
-def simple_debug():
-    try:
-        import os
-        
-        # Check if the data directory exists
-        app_dir = os.path.dirname(__file__)
-        data_dir = os.path.join(app_dir, 'data')
-        exists = os.path.exists(data_dir)
-        
-        # Check basic database connection
-        from database import SessionLocal
-        db = SessionLocal()
-        tables_exist = False
-        
-        try:
-            # Simple query to check database connection
-            result = db.execute("SELECT 1").scalar()
-            tables_exist = result == 1
-        except Exception as e:
-            tables_exist = False
-        finally:
-            db.close()
-            
-        return jsonify({
-            "app_dir": app_dir,
-            "data_dir": data_dir,
-            "data_dir_exists": exists,
-            "database_connection": tables_exist
-        })
-    except Exception as e:
-        return jsonify({"error": str(e)}), 500
-
-@app.route('/api/download-movies', methods=['GET'])
-def download_movies():
-    try:
-        import requests
-        import zipfile
-        import io
-        import os
-        import pandas as pd
-        from database import SessionLocal, engine, Base
-        import models
-        
-        # Create data directory if it doesn't exist
-        data_dir = os.path.join(os.path.dirname(__file__), 'data')
-        os.makedirs(data_dir, exist_ok=True)
-        
-        # Download MovieLens dataset
-        print("Downloading MovieLens dataset...")
-        url = "https://files.grouplens.org/datasets/movielens/ml-latest-small.zip"
-        response = requests.get(url)
-        
-        if response.status_code != 200:
-            return jsonify({"error": f"Failed to download dataset: {response.status_code}"})
-            
-        # Extract ZIP file
-        print("Extracting ZIP file...")
-        z = zipfile.ZipFile(io.BytesIO(response.content))
-        z.extractall(data_dir)
-        
-        # Find CSV files
-        extracted_dir = os.path.join(data_dir, 'ml-latest-small')
-        movies_path = os.path.join(extracted_dir, 'movies.csv')
-        ratings_path = os.path.join(extracted_dir, 'ratings.csv')
-        
-        if not os.path.exists(movies_path) or not os.path.exists(ratings_path):
-            return jsonify({"error": "CSV files not found in extracted data"})
-            
-        # Create database tables
-        Base.metadata.create_all(bind=engine)
-        
-        # Import data
-        db = SessionLocal()
-        
-        try:
-            # Check if data already exists
-            existing_movies = db.query(models.Movie).count()
-            if existing_movies > 0:
-                return jsonify({"message": f"Data already exists in database ({existing_movies} movies)"})
-                
-            # Load CSV files
-            print("Importing movies...")
-            movies_df = pd.read_csv(movies_path)
-            
-            # Import movies
-            movie_count = 0
-            for _, row in movies_df.iterrows():
-                movie = models.Movie(
-                    movieId=int(row['movieId']),
-                    title=row['title'],
-                    genres=row['genres']
-                )
-                db.add(movie)
-                movie_count += 1
-                
-                # Commit in batches
-                if movie_count % 100 == 0:
-                    db.commit()
-                    
-            # Final commit for movies
-            db.commit()
-            print(f"Imported {movie_count} movies")
-            
-            # Import ratings (in batches)
-            print("Importing ratings...")
-            ratings_df = pd.read_csv(ratings_path)
-            rating_count = 0
-            batch_size = 1000
-            for i in range(0, len(ratings_df), batch_size):
-                batch = ratings_df.iloc[i:i+batch_size]
-                for _, row in batch.iterrows():
-                    rating = models.Rating(
-                        userId=int(row['userId']),
-                        movieId=int(row['movieId']),
-                        rating=float(row['rating']),
-                        timestamp=int(row['timestamp']) if 'timestamp' in row else None
-                    )
-                    db.add(rating)
-                    rating_count += 1
-                db.commit()
-                print(f"Imported {rating_count} ratings so far...")
-                
-            return jsonify({
-                "message": "Database setup complete",
-                "imported": {
-                    "movies": movie_count,
-                    "ratings": rating_count
-                }
-            })
-            
-        except Exception as e:
-            db.rollback()
-            print(f"Error importing data: {str(e)}")
-            return jsonify({"error": f"Error importing data: {str(e)}"})
-        finally:
-            db.close()
-            
-    except Exception as e:
-        print(f"Setup error: {str(e)}")
-        return jsonify({"error": str(e)}), 500
+    finally:
+        db.close()
 
 if __name__ == '__main__':
     app.run(debug=True, host='0.0.0.0', port=int(os.environ.get('PORT', 5000)))
