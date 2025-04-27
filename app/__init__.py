@@ -86,15 +86,63 @@ def explain_collaborative_recommendation(movie_id, recommended_id):
 def recommend():
     movie_id = int(request.args.get('movie_id', '1'))
     count = int(request.args.get('count', '5'))
-    method = request.args.get('method', 'hybrid')
     
     db = None
     try:
         from database import get_db
         db = get_db()
         
-        # Rest of your code...
+        # Check if movie exists
+        movie = db.query(models.Movie).filter(models.Movie.movieId == movie_id).first()
+        if not movie:
+            return jsonify({"error": "Movie not found"}), 404
         
+        # Get target movie genres
+        target_genres = movie.genres.split('|')
+        
+        # Find movies with similar genres, limiting to avoid memory issues
+        similar_movies = db.query(models.Movie).filter(
+            models.Movie.movieId != movie_id
+        ).limit(100).all()
+        
+        # Score movies by genre similarity
+        movie_scores = []
+        for similar in similar_movies:
+            similar_genres = similar.genres.split('|')
+            shared = len(set(similar_genres).intersection(set(target_genres)))
+            if shared > 0:
+                movie_scores.append({
+                    'movie': similar,
+                    'score': shared
+                })
+        
+        # Sort by score
+        movie_scores.sort(key=lambda x: x['score'], reverse=True)
+        
+        # Format results
+        result = []
+        for i, scored in enumerate(movie_scores[:count]):
+            similar = scored['movie']
+            movie_info = {
+                'id': int(similar.movieId),
+                'title': similar.title,
+                'genres': similar.genres.split('|'),
+                'year': similar.title[-5:-1] if similar.title[-5:-1].isdigit() else None,
+                'explanation': f"This movie shares similar genres with '{movie.title}'"
+            }
+            result.append(movie_info)
+        
+        return jsonify({
+            "baseMovie": {
+                'id': int(movie.movieId),
+                'title': movie.title,
+                'genres': target_genres,
+                'year': movie.title[-5:-1] if movie.title[-5:-1].isdigit() else None,
+            },
+            "recommendations": result,
+            "method": "content"
+        })
+    
     except Exception as e:
         if db:
             db.rollback()
