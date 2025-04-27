@@ -86,156 +86,23 @@ def explain_collaborative_recommendation(movie_id, recommended_id):
 def recommend():
     movie_id = int(request.args.get('movie_id', '1'))
     count = int(request.args.get('count', '5'))
-    method = request.args.get('method', 'hybrid')  # 'content', 'collaborative', or 'hybrid'
+    method = request.args.get('method', 'hybrid')
     
+    db = None
     try:
-        db = SessionLocal()
+        from database import get_db
+        db = get_db()
         
-        # Check if movie exists
-        movie = db.query(models.Movie).filter(models.Movie.movieId == movie_id).first()
-        if not movie:
-            return jsonify({"error": "Movie not found"}), 404
+        # Rest of your code...
         
-        # Get target movie genres
-        target_genres = movie.genres.split('|')
-        
-        content_recommendations = []
-        collab_recommendations = []
-        
-        # Content-based recommendations (genre matching)
-        if method == 'content' or method == 'hybrid':
-            # Find movies with similar genres
-            similar_movies = db.query(models.Movie).filter(
-                models.Movie.movieId != movie_id
-            ).limit(100).all()
-            
-            # Score each movie by genre overlap
-            movie_scores = []
-            for similar in similar_movies:
-                similar_genres = similar.genres.split('|')
-                # Count shared genres
-                shared = sum(1 for genre in similar_genres if genre in target_genres)
-                if shared > 0:  # Only include movies with at least one shared genre
-                    movie_scores.append({
-                        'movie': similar,
-                        'score': shared
-                    })
-            
-            # Sort by similarity score
-            movie_scores.sort(key=lambda x: x['score'], reverse=True)
-            
-            # Get top recommendations
-            content_recommendations = [scored['movie'].movieId for scored in movie_scores[:count+5]]
-        
-        # Collaborative recommendations (user-based)
-        if method == 'collaborative' or method == 'hybrid':
-            # Find users who rated this movie highly
-            high_raters = db.query(models.Rating.userId).filter(
-                models.Rating.movieId == movie_id,
-                models.Rating.rating >= 4.0
-            ).all()
-            
-            high_raters = [user[0] for user in high_raters]
-            
-            if high_raters:
-                # Find other movies these users rated highly
-                similar_movies = db.query(
-                    models.Rating.movieId,
-                    func.avg(models.Rating.rating).label('avg_rating'),
-                    func.count(models.Rating.userId).label('rating_count')
-                ).filter(
-                    models.Rating.userId.in_(high_raters),
-                    models.Rating.movieId != movie_id,
-                    models.Rating.rating >= 4.0
-                ).group_by(
-                    models.Rating.movieId
-                ).having(
-                    func.count(models.Rating.userId) >= 2  # At least 2 users in common
-                ).order_by(
-                    desc('rating_count'),
-                    desc('avg_rating')
-                ).limit(count+5).all()
-                
-                collab_recommendations = [row[0] for row in similar_movies]
-            else:
-                # If no users rated this movie highly, use movies with similar average ratings
-                avg_rating = db.query(func.avg(models.Rating.rating)).filter(
-                    models.Rating.movieId == movie_id
-                ).scalar() or 0
-                
-                similar_ratings = db.query(
-                    models.Rating.movieId,
-                    func.avg(models.Rating.rating).label('avg_rating'),
-                    func.count(models.Rating.userId).label('rating_count')
-                ).filter(
-                    models.Rating.movieId != movie_id
-                ).group_by(
-                    models.Rating.movieId
-                ).having(
-                    func.count(models.Rating.userId) >= 5  # At least 5 ratings
-                ).order_by(
-                    func.abs(func.avg(models.Rating.rating) - avg_rating)  # Sort by similarity to target rating
-                ).limit(count+5).all()
-                
-                collab_recommendations = [row[0] for row in similar_ratings]
-        
-        # For hybrid, mix recommendations
-        if method == 'hybrid':
-            # Create a diverse list by alternating between the two methods
-            mixed_recommendations = []
-            for i in range(min(len(content_recommendations), len(collab_recommendations))):
-                if i % 2 == 0 and content_recommendations:
-                    mixed_recommendations.append(content_recommendations.pop(0))
-                elif collab_recommendations:
-                    mixed_recommendations.append(collab_recommendations.pop(0))
-                    
-            # Add any remaining recommendations
-            mixed_recommendations.extend(content_recommendations[:count - len(mixed_recommendations)])
-            mixed_recommendations.extend(collab_recommendations[:count - len(mixed_recommendations)])
-            
-            # Take just the requested count, removing duplicates
-            recommendations = []
-            for rec in mixed_recommendations:
-                if rec not in recommendations and rec != movie_id:
-                    recommendations.append(rec)
-                if len(recommendations) >= count:
-                    break
-        elif method == 'content':
-            recommendations = [rec for rec in content_recommendations if rec != movie_id][:count]
-        else:  # collaborative
-            recommendations = [rec for rec in collab_recommendations if rec != movie_id][:count]
-        
-        # Format the recommendations
-        result = []
-        for rec_id in recommendations:
-            movie_info = get_movie_info(rec_id)
-            if movie_info:
-                # Generate appropriate explanation based on method
-                if method == 'content':
-                    explanation = explain_content_recommendation(movie_id, rec_id)
-                elif method == 'collaborative':
-                    explanation = explain_collaborative_recommendation(movie_id, rec_id)
-                else:  # hybrid
-                    # Use content explanation for even indices, collaborative for odd
-                    if recommendations.index(rec_id) % 2 == 0:
-                        explanation = explain_content_recommendation(movie_id, rec_id)
-                    else:
-                        explanation = explain_collaborative_recommendation(movie_id, rec_id)
-                
-                movie_info['explanation'] = explanation
-                result.append(movie_info)
-        
-        return jsonify({
-            "baseMovie": get_movie_info(movie_id),
-            "recommendations": result,
-            "method": method
-        })
-    
     except Exception as e:
+        if db:
+            db.rollback()
         print(f"Error: {str(e)}")
         return jsonify({"error": str(e)}), 500
     finally:
-        db.close()
+        if db:
+            db.close()
 
 @app.route('/api/movies', methods=['GET'])
 def get_movies():
