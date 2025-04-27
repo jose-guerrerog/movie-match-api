@@ -84,120 +84,64 @@ def explain_collaborative_recommendation(movie_id, recommended_id):
 
 @app.route('/api/recommend', methods=['GET'])
 def recommend():
-    movie_id = int(request.args.get('movie_id', '1'))
-    count = int(request.args.get('count', '5'))
-    
-    db = None
     try:
-        from database import get_db
-        db = get_db()
+        # Get parameters with defaults
+        movie_id = request.args.get('movie_id', type=int, default=1)
+        count = request.args.get('count', type=int, default=5)
         
-        # Check if movie exists
-        movie = db.query(models.Movie).filter(models.Movie.movieId == movie_id).first()
-        if not movie:
-            return jsonify({"error": "Movie not found"}), 404
+        # Create database session
+        from database import SessionLocal
+        import models
         
-        # Get target movie genres
-        target_genres = movie.genres.split('|')
+        db = SessionLocal()
         
-        # For diversity, add a year range filter
-        target_year = None
-        if movie.title and movie.title[-5:-1].isdigit():
-            target_year = int(movie.title[-5:-1])
-        
-        # Find movies with similar genres, with more diversity
-        similar_movies = db.query(models.Movie).filter(
-            models.Movie.movieId != movie_id
-        ).limit(500).all()  # Get more movies for better diversity
-        
-        # Score movies by genre similarity but also consider year diversity
-        movie_scores = []
-        for similar in similar_movies:
-            similar_genres = similar.genres.split('|')
-            # Count shared genres
-            shared = len(set(similar_genres).intersection(set(target_genres)))
+        try:
+            # Get the requested movie
+            movie = db.query(models.Movie).filter(models.Movie.movieId == movie_id).first()
             
-            # Calculate year diversity score (lower if same year, higher if different)
-            year_diversity = 1.0  # Default
-            if similar.title and similar.title[-5:-1].isdigit() and target_year:
-                similar_year = int(similar.title[-5:-1])
-                # Slightly prefer movies from different decades
-                year_diversity = min(1.0, abs(similar_year - target_year) / 20.0)
+            if not movie:
+                return jsonify({"error": "Movie not found"}), 404
             
-            if shared > 0:  # Only include movies with at least one shared genre
-                # Combined score favors genre similarity but adds diversity
-                movie_scores.append({
-                    'movie': similar,
-                    'score': shared + (year_diversity * 0.5)  # Weight genre higher than year
-                })
-        
-        # Sort by score
-        movie_scores.sort(key=lambda x: x['score'], reverse=True)
-        
-        # Add diversity by ensuring not all recommendations are from the same year
-        # Take top 20 movies by score, then select diverse movies from them
-        top_candidates = movie_scores[:20]
-        
-        # Ensure year diversity
-        selected_years = set()
-        diverse_selections = []
-        
-        # First, include at least one movie from each decade if available
-        for decade in range(1920, 2030, 10):
-            decade_movies = [m for m in top_candidates 
-                           if m['movie'].title and m['movie'].title[-5:-1].isdigit() 
-                           and int(m['movie'].title[-5:-1]) >= decade 
-                           and int(m['movie'].title[-5:-1]) < decade + 10]
-            
-            if decade_movies and len(diverse_selections) < count:
-                decade_movies.sort(key=lambda x: x['score'], reverse=True)
-                diverse_selections.append(decade_movies[0])
-                selected_years.add(decade)
-                
-        # Then fill remaining slots with highest scores not already selected
-        remaining_slots = count - len(diverse_selections)
-        if remaining_slots > 0:
-            for movie in top_candidates:
-                if movie not in diverse_selections and len(diverse_selections) < count:
-                    diverse_selections.append(movie)
-        
-        # Format results
-        result = []
-        for scored in diverse_selections[:count]:
-            similar = scored['movie']
-            similar_genres = similar.genres.split('|')
-            shared_genres = [g for g in similar_genres if g in target_genres]
-            
-            # Format movie info
-            movie_info = {
-                'id': int(similar.movieId),
-                'title': similar.title,
-                'genres': similar_genres,
-                'year': similar.title[-5:-1] if similar.title[-5:-1].isdigit() else None,
-                'explanation': f"This movie shares similar genres with '{movie.title}': {', '.join(shared_genres)}"
+            # Extract base movie information
+            base_movie = {
+                'id': movie.movieId,
+                'title': movie.title,
+                'genres': movie.genres.split('|') if movie.genres else [],
+                'year': movie.title[-5:-1] if movie.title and len(movie.title) > 5 and movie.title[-5:-1].isdigit() else None
             }
             
-            result.append(movie_info)
-        
-        return jsonify({
-            "baseMovie": {
-                'id': int(movie.movieId),
-                'title': movie.title,
-                'genres': target_genres,
-                'year': movie.title[-5:-1] if movie.title[-5:-1].isdigit() else None,
-            },
-            "recommendations": result,
-            "method": "content"
-        })
-    
-    except Exception as e:
-        if db:
-            db.rollback()
-        print(f"Error: {str(e)}")
-        return jsonify({"error": str(e)}), 500
-    finally:
-        if db:
+            # Get some other random movies as recommendations
+            other_movies = db.query(models.Movie).filter(
+                models.Movie.movieId != movie_id
+            ).limit(count).all()
+            
+            # Format recommendations
+            recommendations = []
+            for other in other_movies:
+                recommendations.append({
+                    'id': other.movieId,
+                    'title': other.title,
+                    'genres': other.genres.split('|') if other.genres else [],
+                    'year': other.title[-5:-1] if other.title and len(other.title) > 5 and other.title[-5:-1].isdigit() else None,
+                    'explanation': f"Another movie you might enjoy"
+                })
+            
+            # Return the results
+            return jsonify({
+                "baseMovie": base_movie,
+                "recommendations": recommendations,
+                "method": "simple"
+            })
+            
+        except Exception as e:
+            print(f"Inner error: {str(e)}")
+            return jsonify({"error": f"An error occurred: {str(e)}"}), 500
+        finally:
             db.close()
+            
+    except Exception as e:
+        print(f"Outer error: {str(e)}")
+        return jsonify({"error": f"An error occurred: {str(e)}"}), 500
 
 @app.route('/api/movies', methods=['GET'])
 def get_movies():
