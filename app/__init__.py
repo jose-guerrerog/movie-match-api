@@ -93,6 +93,7 @@ def recommend():
         from database import SessionLocal
         import models
         from sqlalchemy.sql.expression import func
+        from sqlalchemy import desc
         
         db = SessionLocal()
         
@@ -111,60 +112,102 @@ def recommend():
                 'year': movie.title[-5:-1] if movie.title and len(movie.title) > 5 and movie.title[-5:-1].isdigit() else None
             }
             
-            # Get movies with matching genres - more emphasis on genre matching
+            # Find users who rated this movie highly
+            users_who_liked = db.query(models.Rating.userId).filter(
+                models.Rating.movieId == movie_id,
+                models.Rating.rating >= 4.0
+            ).all()
+            
+            user_ids = [u[0] for u in users_who_liked]
+            
+            # Get recommendations based on collaborative filtering
+            collab_recommendations = []
+            
+            if user_ids:
+                # Find other movies these users rated highly
+                movies_liked_by_same_users = db.query(
+                    models.Rating.movieId,
+                    func.count(models.Rating.userId).label('user_count'),
+                    func.avg(models.Rating.rating).label('avg_rating')
+                ).filter(
+                    models.Rating.userId.in_(user_ids),
+                    models.Rating.movieId != movie_id,
+                    models.Rating.rating >= 4.0
+                ).group_by(
+                    models.Rating.movieId
+                ).having(
+                    func.count(models.Rating.userId) >= 2  # At least 2 users in common
+                ).order_by(
+                    desc('user_count'),
+                    desc('avg_rating')
+                ).limit(count).all()
+                
+                # Get movie details
+                for movie_id, user_count, avg_rating in movies_liked_by_same_users:
+                    collab_movie = db.query(models.Movie).filter(models.Movie.movieId == movie_id).first()
+                    if collab_movie:
+                        collab_recommendations.append({
+                            'movie': collab_movie,
+                            'user_count': user_count,
+                            'avg_rating': avg_rating
+                        })
+            
+            # Get genre-based recommendations as backup
             movie_genres = movie.genres.split('|') if movie.genres else []
-            matching_movies = []
+            genre_recommendations = []
             
             for genre in movie_genres:
                 # For each genre, find some matching movies
                 genre_matches = db.query(models.Movie).filter(
                     models.Movie.movieId != movie_id,
-                    models.Movie.genres.like(f'%{genre}%')
-                ).order_by(func.random()).limit(5).all()
+                    models.Movie.genres.like(f'%{genre}%'),
+                    ~models.Movie.movieId.in_([r['movie'].movieId for r in collab_recommendations])
+                ).order_by(func.random()).limit(3).all()
                 
-                matching_movies.extend(genre_matches)
+                for match in genre_matches:
+                    genre_recommendations.append({
+                        'movie': match,
+                        'genre': genre
+                    })
             
-            # If not enough genre matches, add some random movies
-            if len(matching_movies) < count:
-                random_movies = db.query(models.Movie).filter(
-                    models.Movie.movieId != movie_id,
-                    ~models.Movie.movieId.in_([m.movieId for m in matching_movies])
-                ).order_by(func.random()).limit(count - len(matching_movies)).all()
-                
-                matching_movies.extend(random_movies)
+            # Combine recommendations with priority for collaborative filtering
+            final_recommendations = []
             
-            # Remove duplicates and limit to requested count
-            seen_ids = set()
-            unique_movies = []
-            for m in matching_movies:
-                if m.movieId not in seen_ids and len(unique_movies) < count:
-                    seen_ids.add(m.movieId)
-                    unique_movies.append(m)
+            # First add collaborative recommendations
+            for rec in collab_recommendations:
+                if len(final_recommendations) < count:
+                    final_recommendations.append({
+                        'movie': rec['movie'],
+                        'explanation': f"{rec['user_count']} users who liked '{movie.title}' also rated this highly (avg rating: {rec['avg_rating']:.1f})"
+                    })
             
-            # Format recommendations
+            # Then add genre recommendations to fill remaining slots
+            for rec in genre_recommendations:
+                if len(final_recommendations) < count:
+                    final_recommendations.append({
+                        'movie': rec['movie'],
+                        'explanation': f"This movie shares the genre '{rec['genre']}' with '{movie.title}'"
+                    })
+            
+            # Format the output
             recommendations = []
-            for other in unique_movies:
+            for rec in final_recommendations:
+                other = rec['movie']
                 other_genres = other.genres.split('|') if other.genres else []
-                shared_genres = [g for g in other_genres if g in movie_genres]
-                
-                if shared_genres:
-                    explanation = f"This movie shares genres with '{movie.title}': {', '.join(shared_genres)}"
-                else:
-                    explanation = "A movie you might enjoy"
                 
                 recommendations.append({
                     'id': other.movieId,
                     'title': other.title,
                     'genres': other_genres,
                     'year': other.title[-5:-1] if other.title and len(other.title) > 5 and other.title[-5:-1].isdigit() else None,
-                    'explanation': explanation
+                    'explanation': rec['explanation']
                 })
             
             # Return the results
             return jsonify({
                 "baseMovie": base_movie,
                 "recommendations": recommendations,
-                "method": "genre-based"
+                "method": "hybrid"
             })
             
         except Exception as e:
