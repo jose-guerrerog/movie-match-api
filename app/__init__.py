@@ -84,73 +84,57 @@ def explain_collaborative_recommendation(movie_id, recommended_id):
 
 @app.route('/api/recommend', methods=['GET'])
 def recommend():
-    movie_id = int(request.args.get('movie_id', '1'))
-    count = int(request.args.get('count', '5'))
-    
-    db = None
     try:
-        from database import get_db
-        db = get_db()
+        # Get parameters
+        movie_id = request.args.get('movie_id', type=int)
+        count = request.args.get('count', default=5, type=int)
         
-        # Check if movie exists
-        movie = db.query(models.Movie).filter(models.Movie.movieId == movie_id).first()
-        if not movie:
-            return jsonify({"error": "Movie not found"}), 404
-        
-        # Get target movie genres
-        target_genres = movie.genres.split('|')
-        
-        # Find movies with similar genres, limiting to avoid memory issues
-        similar_movies = db.query(models.Movie).filter(
-            models.Movie.movieId != movie_id
-        ).limit(100).all()
-        
-        # Score movies by genre similarity
-        movie_scores = []
-        for similar in similar_movies:
-            similar_genres = similar.genres.split('|')
-            shared = len(set(similar_genres).intersection(set(target_genres)))
-            if shared > 0:
-                movie_scores.append({
-                    'movie': similar,
-                    'score': shared
+        if not movie_id:
+            return jsonify({"error": "movie_id parameter is required"}), 400
+            
+        # Create database session
+        db = SessionLocal()
+        try:
+            # Get the requested movie
+            movie = db.query(models.Movie).filter(models.Movie.movieId == movie_id).first()
+            if not movie:
+                return jsonify({"error": "Movie not found"}), 404
+                
+            # Get movie genres
+            movie_genres = movie.genres.split('|') if movie.genres else []
+            
+            # Simple recommendation: just get 'count' random movies that aren't the requested one
+            recommendations = db.query(models.Movie).filter(
+                models.Movie.movieId != movie_id
+            ).limit(count*3).all()  # Get more than needed to have a good selection
+            
+            # Format the response
+            result = []
+            for rec in recommendations[:count]:
+                result.append({
+                    'id': rec.movieId,
+                    'title': rec.title,
+                    'genres': rec.genres.split('|') if rec.genres else [],
+                    'year': rec.title[-5:-1] if rec.title[-5:-1].isdigit() else None,
+                    'explanation': "You might also enjoy this movie"
                 })
-        
-        # Sort by score
-        movie_scores.sort(key=lambda x: x['score'], reverse=True)
-        
-        # Format results
-        result = []
-        for i, scored in enumerate(movie_scores[:count]):
-            similar = scored['movie']
-            movie_info = {
-                'id': int(similar.movieId),
-                'title': similar.title,
-                'genres': similar.genres.split('|'),
-                'year': similar.title[-5:-1] if similar.title[-5:-1].isdigit() else None,
-                'explanation': f"This movie shares similar genres with '{movie.title}'"
-            }
-            result.append(movie_info)
-        
-        return jsonify({
-            "baseMovie": {
-                'id': int(movie.movieId),
-                'title': movie.title,
-                'genres': target_genres,
-                'year': movie.title[-5:-1] if movie.title[-5:-1].isdigit() else None,
-            },
-            "recommendations": result,
-            "method": "content"
-        })
-    
-    except Exception as e:
-        if db:
-            db.rollback()
-        print(f"Error: {str(e)}")
-        return jsonify({"error": str(e)}), 500
-    finally:
-        if db:
+                
+            return jsonify({
+                "baseMovie": {
+                    'id': movie.movieId,
+                    'title': movie.title,
+                    'genres': movie_genres,
+                    'year': movie.title[-5:-1] if movie.title[-5:-1].isdigit() else None,
+                },
+                "recommendations": result,
+                "method": "simple"
+            })
+        finally:
             db.close()
+            
+    except Exception as e:
+        print(f"Recommendation error: {str(e)}")
+        return jsonify({"error": "An internal error occurred"}), 500
 
 @app.route('/api/movies', methods=['GET'])
 def get_movies():
