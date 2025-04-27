@@ -92,6 +92,7 @@ def recommend():
         # Create database session
         from database import SessionLocal
         import models
+        from sqlalchemy.sql.expression import func
         
         db = SessionLocal()
         
@@ -110,27 +111,60 @@ def recommend():
                 'year': movie.title[-5:-1] if movie.title and len(movie.title) > 5 and movie.title[-5:-1].isdigit() else None
             }
             
-            # Get some other random movies as recommendations
-            other_movies = db.query(models.Movie).filter(
-                models.Movie.movieId != movie_id
-            ).limit(count).all()
+            # Get movies with matching genres - more emphasis on genre matching
+            movie_genres = movie.genres.split('|') if movie.genres else []
+            matching_movies = []
+            
+            for genre in movie_genres:
+                # For each genre, find some matching movies
+                genre_matches = db.query(models.Movie).filter(
+                    models.Movie.movieId != movie_id,
+                    models.Movie.genres.like(f'%{genre}%')
+                ).order_by(func.random()).limit(5).all()
+                
+                matching_movies.extend(genre_matches)
+            
+            # If not enough genre matches, add some random movies
+            if len(matching_movies) < count:
+                random_movies = db.query(models.Movie).filter(
+                    models.Movie.movieId != movie_id,
+                    ~models.Movie.movieId.in_([m.movieId for m in matching_movies])
+                ).order_by(func.random()).limit(count - len(matching_movies)).all()
+                
+                matching_movies.extend(random_movies)
+            
+            # Remove duplicates and limit to requested count
+            seen_ids = set()
+            unique_movies = []
+            for m in matching_movies:
+                if m.movieId not in seen_ids and len(unique_movies) < count:
+                    seen_ids.add(m.movieId)
+                    unique_movies.append(m)
             
             # Format recommendations
             recommendations = []
-            for other in other_movies:
+            for other in unique_movies:
+                other_genres = other.genres.split('|') if other.genres else []
+                shared_genres = [g for g in other_genres if g in movie_genres]
+                
+                if shared_genres:
+                    explanation = f"This movie shares genres with '{movie.title}': {', '.join(shared_genres)}"
+                else:
+                    explanation = "A movie you might enjoy"
+                
                 recommendations.append({
                     'id': other.movieId,
                     'title': other.title,
-                    'genres': other.genres.split('|') if other.genres else [],
+                    'genres': other_genres,
                     'year': other.title[-5:-1] if other.title and len(other.title) > 5 and other.title[-5:-1].isdigit() else None,
-                    'explanation': f"Another movie you might enjoy"
+                    'explanation': explanation
                 })
             
             # Return the results
             return jsonify({
                 "baseMovie": base_movie,
                 "recommendations": recommendations,
-                "method": "simple"
+                "method": "genre-based"
             })
             
         except Exception as e:
