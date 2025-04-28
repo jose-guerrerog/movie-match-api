@@ -87,7 +87,7 @@ def recommend():
     try:
         # Get parameters with defaults
         movie_id = request.args.get('movie_id', type=int, default=1)
-        count = request.args.get('count', type=int, default=5)
+        count = request.args.get('count', type=int, default=4)
         
         # Create database session
         from database import SessionLocal
